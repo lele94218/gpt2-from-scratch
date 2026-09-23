@@ -1,91 +1,135 @@
 # GPT-2 from scratch: training lab
 
-My hands-on implementation following Andrej Karpathy's [Let's reproduce GPT-2 (124M)](https://www.youtube.com/watch?v=l8pRSuU81PU) and [build-nanogpt](https://github.com/karpathy/build-nanogpt).
+A hands-on GPT-2 implementation following Andrej Karpathy's [Let's reproduce GPT-2 (124M)](https://www.youtube.com/watch?v=l8pRSuU81PU) and [build-nanogpt](https://github.com/karpathy/build-nanogpt).
 
-The training script is preserved as written during the exercise. This repository adds portable setup instructions and includes Tiny Shakespeare, so it can be cloned onto a Linux NVIDIA GPU machine without copying files from a private workspace.
+Train on bundled Tiny Shakespeare or tokenized FineWeb(-Edu) shards, save checkpoints, and resume at the next optimizer step. The Transformer definition remains the original learning implementation. See [the implementation walkthrough](docs/fineweb-resume.md) for the new runtime changes.
 
-## Quick start
+## Install on a Linux NVIDIA GPU machine
 
-Requirements: Git, internet access, Linux, an NVIDIA GPU supporting BF16 (such as RTX 3060 or A10), and [uv](https://docs.astral.sh/uv/getting-started/installation/). Python 3.12 is provisioned by uv. A working host NVIDIA driver is required; this script does not install or change drivers.
+Requirements: Git, internet access, a BF16-capable NVIDIA GPU and a compatible driver. The setup uses [uv](https://docs.astral.sh/uv/getting-started/installation/) and Python 3.12; it never changes host drivers.
 
 ```bash
 git clone https://github.com/lele94218/gpt2-from-scratch.git
 cd gpt2-from-scratch
-
-# Install uv if it is not already available:
 curl -LsSf https://astral.sh/uv/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
-
-# Conservative wheel choice for older drivers, including the A10 host's 535 branch:
 bash setup.sh cu118
 source .venv/bin/activate
-python train-gpt2.py
 ```
 
-`setup.sh cu118` selects PyTorch 2.6.0 with CUDA 11.8 wheels. This is a compatibility profile, not a claim that this exact A10 host has been tested. Run the setup CUDA check and training before committing to a long rental.
+`cu118` installs PyTorch 2.6.0/CUDA 11.8 as a compatibility choice for older drivers, such as the A10 host's 535 branch. `bash setup.sh cu128` selects the original training machine's PyTorch 2.11.0/CUDA 12.8 profile, requiring a newer compatible driver. Follow the [official wheel matrix](https://pytorch.org/get-started/previous-versions/); the CUDA field in `nvidia-smi` is not `torch.version.cuda`. The exact A10 environment has not been tested.
 
-For a newer driver, the original training machine used PyTorch 2.11.0 + CUDA 12.8:
+Attention uses PyTorch SDPA; no separate flash-attn installation is required. First use downloads tokenizer assets and compiles kernels. Do not count compilation time as steady-state throughput.
+
+## Quick run: bundled Shakespeare
 
 ```bash
-bash setup.sh cu128
-source .venv/bin/activate
-python train-gpt2.py
+python train-gpt2.py --max-steps 5 --output-dir checkpoints/shakespeare
 ```
 
-These profiles follow the [official PyTorch wheel matrix](https://pytorch.org/get-started/previous-versions/). The CUDA version displayed by `nvidia-smi` is not the installed PyTorch runtime; check `torch.version.cuda`. CUDA 12.8 wheels need a compatible driver, so do not select that profile solely because an A10 GPU is present.
-
-The first run downloads GPT-2 tokenizer assets and compiles the model. Compilation can take minutes. Separate startup time from steady-state throughput. No separate `flash-attn` package is needed: attention uses PyTorch SDPA.
-
-## Single GPU and DDP
-
-Run from the repository root because the script reads `input.txt` relative to the working directory.
+This writes `checkpoints/shakespeare/latest.pt` after the final optimizer update, before generating text. By default, a longer run also saves every 100 updates. An existing checkpoint is never silently replaced by a fresh run: use `--resume` or another output directory.
 
 ```bash
-# Ordinary single-GPU execution
-python train-gpt2.py
+# DDP path on one GPU
+torchrun --standalone --nproc_per_node=1 train-gpt2.py \
+  --max-steps 5 --output-dir checkpoints/ddp1
 
-# Exercise the DDP path with one GPU
-torchrun --standalone --nproc_per_node=1 train-gpt2.py
-
-# Two visible GPUs on the same machine
-torchrun --standalone --nproc_per_node=2 train-gpt2.py
+# Same-machine two-GPU training
+torchrun --standalone --nproc_per_node=2 train-gpt2.py \
+  --max-steps 5 --output-dir checkpoints/ddp2
 ```
 
-Every rank has a model and optimizer. Data is sharded by rank; gradients synchronize on the final accumulation micro-step. Rank zero prints metrics and generates text after training.
+## Prepare FineWeb-Edu
 
-## Current defaults
+```bash
+uv pip install --python .venv/bin/python -r requirements-data.txt
 
-| Setting | Value |
+# Small pilot: 3 million GPT-2 tokens, including a 1-million-token validation shard.
+python prepare_fineweb.py --output-dir data/fineweb-pilot \
+  --shard-size 1000000 --max-tokens 3000000
+
+python train-gpt2.py --data-dir data/fineweb-pilot \
+  --max-steps 20 --checkpoint-every 5 --output-dir checkpoints/fineweb-pilot
+```
+
+The default source is [HuggingFaceFW/fineweb-edu](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu), configuration `sample-10BT`, streamed without downloading the entire source first. For ordinary FineWeb, select `--dataset HuggingFaceFW/fineweb`. Use `--revision <dataset-commit>` to pin the input snapshot.
+
+For the full source configuration, omit `--max-tokens`:
+
+```bash
+python prepare_fineweb.py --output-dir data/fineweb-edu --shard-size 100000000
+```
+
+Preparation uses one tokenizer process for clarity. Memory is bounded by one shard plus the current document; large-scale preprocessing will take time. GPT-2 tokenization may produce a different token count from the source dataset's advertised count. uint16 storage uses roughly two bytes per token, plus headers; reserve sufficient disk space before processing billions of tokens.
+
+The first shard is held out as validation data. **This PR does not implement validation-loss evaluation or HellaSwag.** All training reads only `train` entries in `manifest.json`. An interrupted preparation has no completed manifest; retry into an empty directory. Preparation itself is not resumable.
+
+Dataset attribution: FineWeb/FineWeb-Edu are published by HuggingFaceFW under ODC-By; see their dataset cards for attribution and use conditions. No FineWeb data or model checkpoints are committed here.
+
+## Save and resume correctly
+
+Keep the LR horizon fixed across interruption. `--max-steps` is the total intended training horizon, while `--stop-after` is an absolute completed-step count for a planned pause:
+
+```bash
+# Plan 100 steps, pause after completing step indices 0..9.
+python train-gpt2.py --data-dir data/fineweb-pilot \
+  --max-steps 100 --stop-after 10 --checkpoint-every 5 \
+  --output-dir checkpoints/experiment
+
+# Continue from step index 10 with the SAME training settings.
+python train-gpt2.py --data-dir data/fineweb-pilot \
+  --max-steps 100 --checkpoint-every 5 \
+  --output-dir checkpoints/experiment --resume checkpoints/experiment/latest.pt
+```
+
+For DDP, launch resume with the same `torchrun --nproc_per_node=N` and settings. All ranks participate in checkpoint coordination; rank zero atomically replaces `latest.pt`. Every rank must be able to read the same checkpoint and data. Multi-node orchestration is outside the tested scope.
+
+A checkpoint contains model weights, AdamW state, the next step, per-rank data cursors and Python/NumPy/PyTorch CPU/CUDA RNG states. The loader verifies shard content hashes on startup (a full sequential disk scan) and validates the dataset fingerprint on restore. A relocated copy with identical filenames/content is allowed.
+
+Resume rejects changes to world size, batch shape, model shape, LR horizon, seed, optimizer settings, precision, compile mode or PyTorch version. Dataset content must match. This is continuation, not elastic rescaling or fine-tuning. Exact floating-point equality across different hardware/software is not promised.
+
+Checkpoints are saved only at completed optimizer steps. Abrupt termination loses work after the most recent successful save; restart with `--resume`. Only `latest.pt` is retained; copy it elsewhere if you need history. Each GPT-2/AdamW checkpoint can occupy roughly 1.5 GB, and atomic replacement temporarily needs space for both the old and new file. Checkpoint time is excluded from the printed training-step throughput.
+
+Load only your own trusted checkpoints: `torch.load(..., weights_only=False)` is used to restore Python/NumPy RNG objects.
+
+## Configuration
+
+Run `python train-gpt2.py --help` for all flags.
+
+| Setting | Default |
 |---|---:|
 | Layers / heads / embedding width | 12 / 12 / 768 |
-| Vocabulary size | 50,304 (padded) |
-| Parameters | 124,475,904 |
-| Micro-batch sequences / sequence length | 4 / 1,024 |
-| Global tokens per optimizer step | 524,288 |
-| Accumulation micro-steps on one GPU | 128 |
-| Optimizer steps | 30 |
-| Seed | 1337 |
-| Precision / optimizer | BF16 autocast / fused AdamW on CUDA |
+| Vocabulary / parameters | 50,304 / 124,475,904 |
+| `--batch-size` / `--seq-len` | 4 / 1,024 |
+| `--total-batch-size` (global tokens/update) | 524,288 |
+| `--max-steps` / `--warmup-steps` | 30 / 10 |
+| `--checkpoint-every` | 100, plus normal exit |
+| `--compile` / `--generate` | enabled |
+| CUDA precision | BF16 autocast |
 
-Settings are intentionally ordinary Python assignments in `train-gpt2.py`, not command-line flags. Edit `max_steps`, `B, T`, and `total_batch_size` directly for experiments. For a short check, set `max_steps = 5` before running either launch mode. With five steps and the current ten-step warmup, all five steps remain in warmup.
+Global batch must be divisible by batch-size × seq-len × world-size. The original single-GPU defaults accumulate 128 micro-batches. Small Shakespeare data repeats within an update: these defaults demonstrate training infrastructure, not an optimal small-data recipe.
 
-Keep the global batch divisible by `B * T * world_size`. Changing the micro-batch while holding the global batch fixed changes the accumulation count. On the original RTX 3060 run, steady-state throughput was approximately 23,000 tokens/s; 30 default steps took roughly 12 minutes plus startup/generation. This is historical context, not an A10 speed estimate.
+`--no-compile` avoids compilation for debugging. `--no-generate` skips post-training sampling. Explicit `--device cpu` uses FP32 and supports lightweight Gloo tests; the documented performance target remains NVIDIA CUDA. Model dimensions can be reduced with `--n-layer`, `--n-head`, `--n-embd` for tests. MPS is not a supported training target in this runtime.
 
-## Scope and data
+## Tests
 
-- `input.txt` is the public [Tiny Shakespeare dataset](https://github.com/karpathy/char-rnn/blob/master/data/tinyshakespeare/input.txt), included for immediate execution.
-- The current large global batch repeats this small dataset within an optimizer step. It exercises training infrastructure; it is not an optimal Shakespeare training recipe.
-- This snapshot does **not** include FineWeb ingestion, validation/HellaSwag, checkpoint saving or resume. Model weights are not saved on exit. Do not use it for a day-long pretraining run expecting recovery or a saved checkpoint.
-- High-performance GPU training on a larger pretraining dataset is a follow-up exercise.
-- Linux NVIDIA CUDA is the documented target. CPU/MPS branches exist in the learning script but are not validated by this setup.
-- Hugging Face `transformers` is only needed if you explicitly use the optional `GPT.from_pretrained()` helper; normal from-scratch training does not import it.
+Offline tests use synthetic documents, tiny model dimensions and no Hugging Face downloads beyond the GPT-2 tokenizer's first-use assets:
 
-## Validation
+```bash
+python -m unittest discover -s tests -v
+```
 
-The original implementation has run on RTX 3060 12GB with Python 3.12, PyTorch 2.11.0+cu128 and tiktoken 0.14.0, including single-rank DDP. A packaging smoke check on that GPU also passed: bundled data loading, full-size GPT forward/backward and fused AdamW update with B=1, T=32 (eager mode). This does not rerun the complete compiled/DDP training loop or validate a fresh dependency installation. Multi-GPU scaling and A10 runtime are not yet verified.
+They check documents spanning multiple shards, token caps, DDP rank boundaries, data corruption, RNG restoration, and uninterrupted versus interrupted/resumed training. CPU tests run both single process and two-rank Gloo and compare loss/LR sequences, final parameters, optimizer state and loader/RNG state exactly.
 
-For direct-vs-DDP validation, use the same script, machine, environment, data and settings. Save both logs and compare step/loss fields, excluding timing. Confirm both commands exit successfully and contain the expected number of steps: two empty logs are not a passing comparison. Exact equality is a local regression target, not guaranteed across GPU types or PyTorch versions.
+Optional CUDA/NCCL regression (one GPU):
+
+```bash
+TEST_DEVICE=cuda TEST_WORLDS=1 TEST_TORCHRUN=1 \
+  python -m unittest discover -s tests -v
+```
+
+Set `TEST_COMPILE=1` to exercise the compiled training path. Tests use disposable directories and do not overwrite real checkpoints. Runtime validation results and limitations are recorded in the PR.
 
 ## Attribution
 
-Based on Karpathy's teaching material and GPT-2 implementation patterns. The MIT license notice from [nanoGPT](https://github.com/karpathy/nanoGPT/blob/master/LICENSE) is retained in `LICENSE`. Tiny Shakespeare originates from the linked char-rnn dataset; this repository does not claim authorship of the dataset.
+The bundled [Tiny Shakespeare](https://github.com/karpathy/char-rnn/blob/master/data/tinyshakespeare/input.txt) comes from char-rnn. Based on Karpathy's teaching material and GPT-2 implementation patterns; the MIT notice from [nanoGPT](https://github.com/karpathy/nanoGPT/blob/master/LICENSE) is retained in `LICENSE`.

@@ -213,226 +213,178 @@ class GPT(nn.Module):
     
         return model
         
-max_lr = 6e-4
-min_lr = max_lr * 0.1
-warmup_steps = 10
-max_steps = 30        # 你训多少步就写多少
+# The model above is unchanged. The runtime below adds data/checkpoint lifecycle.
+import argparse
+from contextlib import nullcontext
+from dataclasses import asdict
+from pathlib import Path
+import random
+import numpy as np
 
-def get_lr(it):
-    # 1) 线性 warmup
+from data import TokenLoader
+from checkpoint import save_checkpoint, load_checkpoint
+
+
+def get_lr(it, max_lr, warmup_steps, max_steps):
     if it < warmup_steps:
         return max_lr * (it + 1) / warmup_steps
-    # 2) 超过训练末尾,固定 min_lr
-    if it > max_steps:
+    min_lr = max_lr * 0.1
+    if it >= max_steps:
         return min_lr
-    # 3) 中间:cosine 从 max_lr 平滑降到 min_lr
-    decay_ratio = (it - warmup_steps) / (max_steps - warmup_steps)
-    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
-    return min_lr + coeff * (max_lr - min_lr)
-
-class DataLoaderLite:
-    def __init__(self, B, T, process_rank, num_processes):
-        self.B = B
-        self.T = T
-        self.process_rank = process_rank
-        self.num_processes = num_processes
-
-        enc = tiktoken.get_encoding('gpt2')
-        with open('input.txt') as f:
-            text = f.read()
-        tokens = enc.encode(text)
-        self.tokens = torch.tensor(tokens)
-        assert len(self.tokens) >= B * T * num_processes + 1
-        if process_rank == 0:
-            print(f"loaded {len(self.tokens)} tokens")
-            print(f"1 epoch = {(len(self.tokens) - 1) // (B * T * num_processes)} micro-steps per rank")
-        self.current_position = B * T * process_rank
-
-    def next_batch(self):
-        B, T = self.B, self.T
-        buf = self.tokens[self.current_position:self.current_position + B*T + 1]
-        x = buf[:-1].view(B, T)
-        y = buf[1:].view(B,T)
-        self.current_position += B * T * self.num_processes
-        next_round_start = self.current_position - B * T * self.process_rank
-        if next_round_start + B * T * self.num_processes + 1 > len(self.tokens):
-            self.current_position = B * T * self.process_rank
-        return x,y 
+    ratio = (it - warmup_steps) / (max_steps - warmup_steps)
+    return min_lr + 0.5 * (1.0 + math.cos(math.pi * ratio)) * (max_lr - min_lr)
 
 
-# ------- main ---------
-ddp = int(os.environ.get('RANK', -1)) != -1
-if ddp:
-    assert torch.cuda.is_available()
-    init_process_group(backend='nccl')
-    ddp_rank = int(os.environ['RANK'])
-    ddp_local_rank = int(os.environ['LOCAL_RANK'])
-    ddp_world_size = int(os.environ['WORLD_SIZE'])
-    master_process = ddp_rank == 0
-    device = f'cuda:{ddp_local_rank}'
-    torch.cuda.set_device(device)
-else:
-    # vanilla, non-DDP run
-    ddp_rank = 0
-    ddp_local_rank = 0
-    ddp_world_size = 1
-    master_process = True
-    if torch.cuda.is_available():
-        device = 'cuda'
-    elif torch.backends.mps.is_available():
-        device = 'mps'
-    else:
-        device = 'cpu'
-    # device = 'cpu'
-    print(f'using device: {device}')
-
-torch.manual_seed(1337)
-if torch.cuda.is_available():
-    torch.cuda.manual_seed(1337)
-
-""" Training code """
-total_batch_size = 524288
-B, T = 4, 1024
-assert total_batch_size % (B * T * ddp_world_size) == 0
-grad_accum_steps = total_batch_size // (B * T * ddp_world_size)
-if master_process:
-    print(f'total desired batch size: {total_batch_size}')
-    print(f'grad accum step: {grad_accum_steps}')
-
-train_loader = DataLoaderLite(B=B, T=T, process_rank = ddp_rank, num_processes=ddp_world_size)
-device_type = device.split(':')[0]
-
-torch.set_float32_matmul_precision('high')
-model = GPT(GPTConfig(vocab_size=50304))
-model.to(device)
-optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device=device, master_process=master_process)
-model = torch.compile(model)
-
-if ddp:
-    model = DDP(model, device_ids=[ddp_local_rank])
-raw_model = model.module if ddp else model #??
-
-if master_process:
-    print(sum(p.numel() for p in model.parameters()))
-    
-for i in range(max_steps):
-    t0 = time.time()
-    optimizer.zero_grad()
-    loss_accum = 0.0
-    for micro_step in range(grad_accum_steps):
-        x, y = train_loader.next_batch()
-        x, y = x.to(device), y.to(device)
-        if ddp:
-            model.require_backward_grad_sync = (micro_step == grad_accum_steps - 1)
-            
-        with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
-            logits, loss = model(x, y)
-        loss = loss / grad_accum_steps
-        loss_accum += loss.detach()
-        loss.backward()
-    if ddp:
-        dist.all_reduce(loss_accum, op=dist.ReduceOp.AVG)
-    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-
-    # LR scheduler
-    lr = get_lr(i)
-    for param_group in optimizer.param_groups:
-        param_group['lr'] = lr
-    
-    optimizer.step()
-
-    if device_type == 'cuda':
-        torch.cuda.synchronize()
-    t1 = time.time()
-    dt = (t1 - t0) * 1000
-    tokens_per_sec = total_batch_size / (t1 - t0)
-    if master_process:
-        print(f'step {i}, loss: {loss_accum.item()}, lr: {lr:.4e} norm: {norm:.4f}, dt: {dt:.2f}ms, tok/sec: {tokens_per_sec:.2f}')
+def parse_args():
+    parser = argparse.ArgumentParser(description='GPT-2 training with resumable text/FineWeb data')
+    data = parser.add_mutually_exclusive_group()
+    data.add_argument('--input-file', default=str(Path(__file__).with_name('input.txt')))
+    data.add_argument('--data-dir', help='Directory produced by prepare_fineweb.py')
+    parser.add_argument('--max-steps', type=int, default=30, help='Total LR/training horizon; keep unchanged on resume')
+    parser.add_argument('--stop-after', type=int, help='Stop at this absolute completed-step count, keeping the LR horizon')
+    parser.add_argument('--batch-size', type=int, default=4)
+    parser.add_argument('--seq-len', type=int, default=1024)
+    parser.add_argument('--total-batch-size', type=int, default=524288, help='Global tokens per optimizer update')
+    parser.add_argument('--warmup-steps', type=int, default=10)
+    parser.add_argument('--max-lr', type=float, default=6e-4)
+    parser.add_argument('--weight-decay', type=float, default=0.1)
+    parser.add_argument('--seed', type=int, default=1337)
+    parser.add_argument('--checkpoint-every', type=int, default=100, help='Steps between atomic latest.pt saves; also save at normal exit')
+    parser.add_argument('--output-dir', default='checkpoints')
+    parser.add_argument('--resume', help='Trusted latest.pt file; same config and data required')
+    parser.add_argument('--device', choices=['auto', 'cuda', 'cpu'], default='auto')
+    parser.add_argument('--compile', action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument('--generate', action=argparse.BooleanOptionalAction, default=True)
+    # Defaults remain GPT-2 124M; smaller shapes make lifecycle tests inexpensive.
+    parser.add_argument('--n-layer', type=int, default=12)
+    parser.add_argument('--n-head', type=int, default=12)
+    parser.add_argument('--n-embd', type=int, default=768)
+    args = parser.parse_args()
+    if min(args.max_steps, args.batch_size, args.seq_len, args.total_batch_size,
+           args.checkpoint_every, args.n_layer, args.n_head, args.n_embd) <= 0:
+        parser.error('Steps, batch dimensions, checkpoint interval and model dimensions must be positive')
+    if args.seq_len > 1024 or args.n_embd % args.n_head:
+        parser.error('seq-len must be <= 1024 and n-embd divisible by n-head')
+    if args.warmup_steps < 0 or args.max_lr <= 0 or args.weight_decay < 0:
+        parser.error('Invalid optimizer/scheduler configuration')
+    if args.stop_after is not None and not 0 < args.stop_after <= args.max_steps:
+        parser.error('stop-after must be between 1 and max-steps')
+    return args
 
 
-# Generate words
-if master_process:
-    num_return_sequences = 5
-    max_length = 30
-    enc = tiktoken.get_encoding('gpt2')
-    
+def generate(raw_model, device):
     raw_model.eval()
-    
-    tokens = enc.encode('yes we can continue')
-    tokens = torch.tensor(tokens, dtype=torch.long) #(8,)
-    tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
-    
-    x = tokens.to(device)
-    
-    # generate! right now x is (B, T) where B = 5, T = 8
-    # set the seed to 42
+    enc = tiktoken.get_encoding('gpt2')
+    tokens = torch.tensor(enc.encode('yes we can continue'), dtype=torch.long, device=device)
+    x = tokens.unsqueeze(0).repeat(5, 1)
     torch.manual_seed(42)
-    # torch.cuda.manual_seed(42)
-    while x.size(1) < max_length:
-        # forward the model to get the logits
-        with torch.no_grad():
-            logits, _ = raw_model(x) # (B, T, vocab_size)
-            # take the logits at the last position
-            logits = logits[:, -1, :] # (B, vocab_size)
-            # get the probabilities
-            probs = F.softmax(logits, dim=-1)
-            # do top-k sampling of 50 (huggingface pipeline default)
-            # topk_probs here becomes (5, 50), topk_indices is (5, 50)
-            topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
-            # select a token from the top-k probabilities
-            ix = torch.multinomial(topk_probs, 1) # (B, 1)
-            # gather the corresponding indices
-            xcol = torch.gather(topk_indices, -1, ix) # (B, 1)
-            # append to the sequence
-            x = torch.cat((x, xcol), dim=1)
-    
-    for i in range(num_return_sequences):
-        tokens = x[i, :max_length].tolist()
-        decoded = enc.decode(tokens)
-        print('>', decoded)
-if ddp:
-    destroy_process_group()
-
-
-""" Generation code """
-
-"""
-model = GPT.from_pretrained('gpt2')
-model.eval()
-model.to(device)
-print('done')
-
-enc = tiktoken.get_encoding('gpt2')
-tokens = enc.encode('yes we can continue')
-tokens = torch.tensor(tokens, dtype=torch.long) #(8,)
-tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
-
-x = tokens.to(device)
-
-# generate! right now x is (B, T) where B = 5, T = 8
-# set the seed to 42
-torch.manual_seed(42)
-# torch.cuda.manual_seed(42)
-while x.size(1) < max_length:
-    # forward the model to get the logits
     with torch.no_grad():
-        logits, _ = model(x) # (B, T, vocab_size)
-        # take the logits at the last position
-        logits = logits[:, -1, :] # (B, vocab_size)
-        # get the probabilities
-        probs = F.softmax(logits, dim=-1)
-        # do top-k sampling of 50 (huggingface pipeline default)
-        # topk_probs here becomes (5, 50), topk_indices is (5, 50)
-        topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
-        # select a token from the top-k probabilities
-        ix = torch.multinomial(topk_probs, 1) # (B, 1)
-        # gather the corresponding indices
-        xcol = torch.gather(topk_indices, -1, ix) # (B, 1)
-        # append to the sequence
-        x = torch.cat((x, xcol), dim=1)
+        while x.size(1) < 30:
+            logits, _ = raw_model(x)
+            # The padded vocabulary contains IDs the GPT-2 tokenizer cannot decode.
+            probs = F.softmax(logits[:, -1, :enc.n_vocab], dim=-1)
+            topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
+            ix = torch.multinomial(topk_probs, 1)
+            x = torch.cat((x, torch.gather(topk_indices, -1, ix)), dim=1)
+    for row in x.tolist():
+        print('>', enc.decode(row))
 
-for i in range(num_return_sequences):
-    tokens = x[i, :max_length].tolist()
-    decoded = enc.decode(tokens)
-    print('>', decoded)
-"""
+
+def train(args, rank, world_size, device, ddp):
+    master = rank == 0
+    B, T = args.batch_size, args.seq_len
+    if args.total_batch_size % (B * T * world_size):
+        raise ValueError('total-batch-size must be divisible by B*T*world_size')
+    accum_steps = args.total_batch_size // (B * T * world_size)
+    output = Path(args.output_dir) / 'latest.pt'
+    if output.exists() and not args.resume:
+        raise FileExistsError(f'{output} exists; use --resume or a new --output-dir')
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.set_float32_matmul_precision('high')
+    loader = TokenLoader(B, T, rank, world_size, args.input_file, args.data_dir)
+    model_config = GPTConfig(vocab_size=50304, n_layer=args.n_layer, n_head=args.n_head, n_embd=args.n_embd)
+    raw_model = GPT(model_config).to(device)  # Keep the original uncompiled module for saving.
+    optimizer = raw_model.configure_optimizers(args.weight_decay, args.max_lr, device.type, master)
+    model = torch.compile(raw_model) if args.compile else raw_model
+    if ddp:
+        model = DDP(model, device_ids=[device.index] if device.type == 'cuda' else None)
+    run_config = dict(model=asdict(model_config), batch_size=B, seq_len=T,
+                      total_batch_size=args.total_batch_size, world_size=world_size,
+                      max_steps=args.max_steps, warmup_steps=args.warmup_steps,
+                      max_lr=args.max_lr, weight_decay=args.weight_decay, seed=args.seed,
+                      device=device.type, compile=args.compile, torch_version=str(torch.__version__),
+                      precision='bf16' if device.type == 'cuda' else 'fp32')
+    start_step = 0
+    if args.resume:
+        # Restore after model initialization/wrapping, which may consume RNG.
+        start_step = load_checkpoint(args.resume, raw_model, optimizer, loader, run_config, device)
+    end_step = args.stop_after or args.max_steps
+    if end_step < start_step:
+        raise ValueError('stop-after precedes the checkpoint step')
+    if master:
+        print(f'parameters: {sum(p.numel() for p in raw_model.parameters())}; grad accum: {accum_steps}; steps: {start_step}..{end_step-1}', flush=True)
+    model.train()
+    for step in range(start_step, end_step):
+        t0 = time.perf_counter()
+        optimizer.zero_grad()
+        loss_accum = torch.zeros((), device=device)
+        for micro_step in range(accum_steps):
+            x, y = loader.next_batch()
+            x, y = x.to(device), y.to(device)
+            if ddp:
+                model.require_backward_grad_sync = micro_step == accum_steps - 1
+            context = torch.autocast('cuda', dtype=torch.bfloat16) if device.type == 'cuda' else nullcontext()
+            with context:
+                _, loss = model(x, y)
+            loss = loss / accum_steps
+            loss_accum += loss.detach()
+            loss.backward()
+        if ddp:
+            dist.all_reduce(loss_accum, op=dist.ReduceOp.SUM)
+            loss_accum /= world_size
+        norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        lr = get_lr(step, args.max_lr, args.warmup_steps, args.max_steps)
+        for group in optimizer.param_groups:
+            group['lr'] = lr
+        optimizer.step()
+        if device.type == 'cuda':
+            torch.cuda.synchronize(device)
+        dt = time.perf_counter() - t0
+        if master:
+            print(f'step {step}, loss: {loss_accum.item()}, lr: {lr:.4e} norm: {norm:.4f}, dt: {dt*1000:.2f}ms, tok/sec: {args.total_batch_size/dt:.2f}', flush=True)
+        # Every rank enters this call; only rank zero writes the shared checkpoint.
+        # next_step points to the next update, and the loader already points to its data.
+        if (step + 1) % args.checkpoint_every == 0 or step + 1 == end_step:
+            save_checkpoint(output, raw_model, optimizer, loader, step + 1, run_config, device)
+            if master:
+                print(f'checkpoint: {output} (next step {step+1})', flush=True)
+    # Checkpoint precedes generation: sampling must not change saved training RNG.
+    if master and args.generate:
+        generate(raw_model, device)
+
+
+def main():
+    args = parse_args()
+    ddp = int(os.environ.get('RANK', -1)) != -1
+    rank = int(os.environ['RANK']) if ddp else 0
+    local_rank = int(os.environ['LOCAL_RANK']) if ddp else 0
+    world_size = int(os.environ['WORLD_SIZE']) if ddp else 1
+    kind = ('cuda' if torch.cuda.is_available() else 'cpu') if args.device == 'auto' else args.device
+    device = torch.device(f'cuda:{local_rank}' if kind == 'cuda' else 'cpu')
+    if kind == 'cuda':
+        torch.cuda.set_device(device)
+        if not torch.cuda.is_bf16_supported():
+            raise RuntimeError('CUDA training requires BF16 support')
+    try:
+        if ddp:
+            init_process_group(backend='nccl' if kind == 'cuda' else 'gloo')
+        train(args, rank, world_size, device, ddp)
+    finally:
+        if dist.is_initialized():
+            destroy_process_group()
+
+
+if __name__ == '__main__':
+    main()
