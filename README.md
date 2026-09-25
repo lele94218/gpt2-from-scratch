@@ -113,6 +113,8 @@ Global batch must be divisible by batch-size × seq-len × world-size. The origi
 
 ## Tests
 
+For full GPT-2 124M acceptance on a rented two-GPU host, follow the [GPU test manual](docs/gpu-test-manual.md): single-rank entry-point comparison, real FineWeb shards, and two-rank uninterrupted versus resumed training with exact checkpoint checks.
+
 Offline tests use synthetic documents, tiny model dimensions and no Hugging Face downloads beyond the GPT-2 tokenizer's first-use assets:
 
 ```bash
