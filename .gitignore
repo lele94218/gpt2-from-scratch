@@ -14,3 +14,6 @@ checkpoints/
 *.bin
 *.safetensors
 wandb/
+data/
+*.npy
+*.tmp
