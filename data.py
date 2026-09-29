@@ -17,7 +17,9 @@ def file_digest(path):
 
 
 class TokenLoader:
-    def __init__(self, B, T, rank, world_size, input_file=None, data_dir=None):
+    def __init__(self, B, T, rank, world_size, input_file=None, data_dir=None, split="train"):
+        if split not in ("train", "val") or (split == "val" and not data_dir):
+            raise ValueError("Validation requires a data directory and split must be train or val")
         self.B, self.T = B, T
         self.rank, self.world_size = rank, world_size
         self.stride = B * T * world_size
@@ -30,7 +32,7 @@ class TokenLoader:
             if manifest['tokenizer'] != 'gpt2':
                 raise ValueError('Expected GPT-2 tokenization')
             for entry in manifest['shards']:
-                if entry['split'] != 'train':
+                if entry['split'] != split:
                     continue
                 path = root / entry['file']
                 if file_digest(path) != entry['sha256']:
@@ -43,7 +45,7 @@ class TokenLoader:
                 # A short last shard cannot supply one synchronized DDP round.
                 if len(array) < self.stride + 1:
                     if rank == 0:
-                        print(f'skipping short train shard: {path.name}', flush=True)
+                        print(f'skipping short {split} shard: {path.name}', flush=True)
                     continue
                 self.arrays.append(array)
                 identity.append((path.name, entry['sha256']))
@@ -53,10 +55,10 @@ class TokenLoader:
             self.arrays = [np.asarray(tokens, dtype=np.uint16)]
             identity = [('text', file_digest(path))]
         if not self.arrays or any(len(a) < self.stride + 1 for a in self.arrays):
-            raise ValueError('No usable training data: need at least B*T*world_size+1 tokens per shard')
+            raise ValueError(f'No usable {split} data: need at least B*T*world_size+1 tokens per shard')
         self.fingerprint = hashlib.sha256(json.dumps(identity).encode()).hexdigest()
         if rank == 0:
-            print(f'loaded {len(self.arrays)} train shard(s), {sum(map(len, self.arrays))} tokens', flush=True)
+            print(f'loaded {len(self.arrays)} {split} shard(s), {sum(map(len, self.arrays))} tokens', flush=True)
 
     def next_batch(self):
         start = self.position + self.B * self.T * self.rank

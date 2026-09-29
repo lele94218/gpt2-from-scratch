@@ -39,7 +39,29 @@ torchrun --standalone --nproc_per_node=2 train-gpt2.py \
   --max-steps 5 --output-dir checkpoints/ddp2
 ```
 
-## Prepare FineWeb-Edu
+## Download pretokenized FineWeb-Edu (recommended for training)
+
+Use [Karpathy's GPT-2 token shards](https://huggingface.co/datasets/karpathy/fineweb-edu-100B-gpt2-token-shards) without running tokenization:
+
+```bash
+uv pip install --python .venv/bin/python -r requirements-tokens.txt
+
+# Pilot: 100M training tokens + 100M validation tokens.
+python prepare_fineweb_tokens.py --train-shards 1 --output-dir data/fineweb-pretokenized-pilot
+
+# 10B training tokens + 100M validation tokens.
+python prepare_fineweb_tokens.py --train-shards 100 --output-dir data/fineweb-pretokenized-10B
+```
+
+Point training at `--data-dir data/fineweb-pretokenized-10B` and omit `--input-file`. The script pins the dataset revision, downloads training shards 1–100 and validation shard 0, checks llm.c GPT-2 headers, file sizes and token IDs, and preserves the token IDs in `.npy` format. It publishes the loader's SHA-256 manifest only after all selected shards pass.
+
+Re-run the same command after interruption. Downloads are reused, existing NPY contents are compared against the source before being skipped, and partial `.tmp` outputs are replaced. A `.preparation.json` records the selection; use a new output directory to change the shard count or revision. The BIN cache can be shared. Completed outputs from the earlier manual conversion commands are accepted if their source revision and file selection match. Do not prepare/reverify a directory during training, or run concurrent preparations into it.
+
+Raw and converted data occupy about **40.4 GB** for this selection; leave at least 50 GB free for preparation, plus space for your environment and checkpoints. `--cache-dir` defaults to `data/fineweb-bin-cache`. Conversion uses CPU and bounded chunks/memory maps; it requires no GPU, PyTorch or tokenizer. Downloading on a rented GPU instance still incurs applicable instance and bandwidth costs.
+
+This selects 10B from the **100B pretokenized corpus**; it is not guaranteed to match `sample-10BT` documents/order. Validation stays separate. Do not download the full 100B repository for this run. The source is ODC-By; retain attribution to HuggingFaceFW/FineWeb-Edu and Karpathy's token-shard repository. The binary format is defined by [llm.c's writer](https://github.com/karpathy/llm.c/blob/master/dev/data/data_common.py).
+
+## Prepare FineWeb-Edu from raw text (optional)
 
 ```bash
 uv pip install --python .venv/bin/python -r requirements-data.txt
@@ -62,9 +84,38 @@ python prepare_fineweb.py --output-dir data/fineweb-edu --shard-size 100000000
 
 Preparation uses one tokenizer process for clarity. Memory is bounded by one shard plus the current document; large-scale preprocessing will take time. GPT-2 tokenization may produce a different token count from the source dataset's advertised count. uint16 storage uses roughly two bytes per token, plus headers; reserve sufficient disk space before processing billions of tokens.
 
-The first shard is held out as validation data. **This PR does not implement validation-loss evaluation or HellaSwag.** All training reads only `train` entries in `manifest.json`. An interrupted preparation has no completed manifest; retry into an empty directory. Preparation itself is not resumable.
+The first shard is held out as validation data. Validation-loss evaluation is available as described below; HellaSwag is not implemented. All training reads only `train` entries in `manifest.json`. An interrupted preparation has no completed manifest; retry into an empty directory. Preparation itself is not resumable.
 
 Dataset attribution: FineWeb/FineWeb-Edu are published by HuggingFaceFW under ODC-By; see their dataset cards for attribution and use conditions. No FineWeb data or model checkpoints are committed here.
+
+## Evaluate an existing checkpoint
+
+No retraining is needed. Model dimensions are read from the checkpoint; optimizer and training cursors are not restored or updated. Existing format-version-1 checkpoints remain compatible.
+
+```bash
+python eval-gpt2.py --checkpoint checkpoints/gpt2-fineweb-10B/latest.pt \
+  --data-dir data/fineweb-pretokenized-10B --device cuda \
+  --batch-size 4 --seq-len 1024 --max-batches 20
+
+# Two GPUs evaluate the same global sample, partitioned between ranks.
+torchrun --standalone --nproc_per_node=2 eval-gpt2.py \
+  --checkpoint checkpoints/gpt2-fineweb-10B/latest.pt \
+  --data-dir data/fineweb-pretokenized-10B --device cuda --max-batches 20
+```
+
+Only `val` entries are loaded and checksum-verified. Training shard files need not be present. Use `--device cpu` or explicitly `--device mps` for standalone Mac evaluation; `auto` selects CUDA when available, otherwise CPU. CUDA uses BF16 autocast, CPU/MPS FP32, so values across these devices need not match exactly.
+
+The default evaluates **20 global batches (81,920 target tokens at B=4, T=1024)**, a quick sample rather than the full 100M-token validation shard. `--max-batches 0` evaluates every complete sequence once. Partial final batches are included; each shard's trailing incomplete sequence is omitted. Sequences do not cross shard boundaries. There is no wraparound or duplication to meet a batch limit. Reported loss is summed token negative log-likelihood divided by evaluated token count; perplexity is exp(loss). Output includes the checkpoint step, token count and evaluation settings. DDP reduces summed loss and token count, including ranks with no assigned batches.
+
+To validate during training, add:
+
+```bash
+python train-gpt2.py --data-dir data/fineweb-pretokenized-10B \
+  --max-steps 19073 --warmup-steps 715 --no-generate \
+  --eval-every 250 --eval-batches 20 --output-dir checkpoints/with-validation
+```
+
+`--eval-every 250` evaluates after every 250 updates and at normal exit. `--eval-every 0` (default) keeps evaluation off, including text-only runs. `--eval-batches 0` requests the full validation split. Every evaluation restarts from the same validation prefix, preserves RNG state and restores training mode. It uses a separate data source and never advances the training cursor or updates parameters. These evaluation settings may be changed on resume without changing the checkpoint format or LR horizon. Training checkpoints are saved before a coincident evaluation; evaluation time is excluded from the printed training-step throughput.
 
 ## Save and resume correctly
 
