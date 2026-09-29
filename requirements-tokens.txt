@@ -1,0 +1,3 @@
+# Download/conversion only: no torch, datasets or tokenizer required.
+numpy>=1.26,<3
+huggingface_hub>=0.27,<2

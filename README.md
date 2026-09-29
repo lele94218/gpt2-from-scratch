@@ -39,7 +39,29 @@ torchrun --standalone --nproc_per_node=2 train-gpt2.py \
   --max-steps 5 --output-dir checkpoints/ddp2
 ```
 
-## Prepare FineWeb-Edu
+## Download pretokenized FineWeb-Edu (recommended for training)
+
+Use [Karpathy's GPT-2 token shards](https://huggingface.co/datasets/karpathy/fineweb-edu-100B-gpt2-token-shards) without running tokenization:
+
+```bash
+uv pip install --python .venv/bin/python -r requirements-tokens.txt
+
+# Pilot: 100M training tokens + 100M validation tokens.
+python prepare_fineweb_tokens.py --train-shards 1 --output-dir data/fineweb-pretokenized-pilot
+
+# 10B training tokens + 100M validation tokens.
+python prepare_fineweb_tokens.py --train-shards 100 --output-dir data/fineweb-pretokenized-10B
+```
+
+Point training at `--data-dir data/fineweb-pretokenized-10B` and omit `--input-file`. The script pins the dataset revision, downloads training shards 1–100 and validation shard 0, checks llm.c GPT-2 headers, file sizes and token IDs, and preserves the token IDs in `.npy` format. It publishes the loader's SHA-256 manifest only after all selected shards pass.
+
+Re-run the same command after interruption. Downloads are reused, existing NPY contents are compared against the source before being skipped, and partial `.tmp` outputs are replaced. A `.preparation.json` records the selection; use a new output directory to change the shard count or revision. The BIN cache can be shared. Completed outputs from the earlier manual conversion commands are accepted if their source revision and file selection match. Do not prepare/reverify a directory during training, or run concurrent preparations into it.
+
+Raw and converted data occupy about **40.4 GB** for this selection; leave at least 50 GB free for preparation, plus space for your environment and checkpoints. `--cache-dir` defaults to `data/fineweb-bin-cache`. Conversion uses CPU and bounded chunks/memory maps; it requires no GPU, PyTorch or tokenizer. Downloading on a rented GPU instance still incurs applicable instance and bandwidth costs.
+
+This selects 10B from the **100B pretokenized corpus**; it is not guaranteed to match `sample-10BT` documents/order. Validation stays separate. Do not download the full 100B repository for this run. The source is ODC-By; retain attribution to HuggingFaceFW/FineWeb-Edu and Karpathy's token-shard repository. The binary format is defined by [llm.c's writer](https://github.com/karpathy/llm.c/blob/master/dev/data/data_common.py).
+
+## Prepare FineWeb-Edu from raw text (optional)
 
 ```bash
 uv pip install --python .venv/bin/python -r requirements-data.txt
