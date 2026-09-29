@@ -4,6 +4,7 @@ from pathlib import Path
 import random
 import re
 import subprocess
+import socket
 import sys
 import tempfile
 import unittest
@@ -17,6 +18,12 @@ from prepare_fineweb import write_shards
 from checkpoint import rng_state, restore_rng
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def free_port():
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
 
 
 def assert_nested_equal(test, a, b):
@@ -119,13 +126,13 @@ class TrainingTests(unittest.TestCase):
                 prefix = [sys.executable]
                 # Exercise torchrun/NCCL even at world size one when requested.
                 if world > 1 or os.environ.get('TEST_TORCHRUN') == '1':
-                    prefix += ['-m', 'torch.distributed.run', '--standalone', f'--nproc_per_node={world}']
+                    prefix += ['-m', 'torch.distributed.run', '--master-addr=127.0.0.1', f'--master-port={free_port()}', f'--nproc_per_node={world}']
                 base = prefix + [str(ROOT/'train-gpt2.py'), '--device', device,
                     '--compile' if compiled else '--no-compile', '--no-generate',
                     '--n-layer', '1', '--n-head', '1', '--n-embd', '16',
                     '--batch-size', '1', '--seq-len', '4', '--total-batch-size', '16',
                     '--max-steps', '4', '--warmup-steps', '1', '--checkpoint-every', '2',
-                    '--data-dir', str(self.data)]
+                    '--data-dir', str(self.data), '--eval-every', '2', '--eval-batches', '3']
                 full, part = self.root/f'full-{world}', self.root/f'part-{world}'
                 env = dict(os.environ, OMP_NUM_THREADS='1', PYTHONUNBUFFERED='1')
                 def run(extra, ok=True):
@@ -148,6 +155,9 @@ class TrainingTests(unittest.TestCase):
                 assert_nested_equal(self, a, b)
                 self.assertEqual(a['next_step'], 4)
                 if world == 1:
+                    plain = self.root/'without-eval'
+                    run(['--output-dir', str(plain), '--eval-every', '0'])
+                    assert_nested_equal(self, a, torch.load(plain/'latest.pt', map_location='cpu', weights_only=False))
                     error = run(['--output-dir', str(part), '--resume', checkpoint, '--max-steps', '5'], ok=False)
                     self.assertIn('Resume configuration differs', error)
                     error = run(['--output-dir', str(part)], ok=False)

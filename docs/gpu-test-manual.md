@@ -202,3 +202,21 @@ Record actual observations before checking any boxes:
 | Checkpoint size, total job wall time, rental cost | |
 
 Back up logs, manifest, environment records and any checkpoint you want to keep **off the rented instance** before destroying it. This manual establishes training lifecycle correctness; it does not establish validation quality, a full FineWeb run, or eight-GPU scaling.
+
+
+## Validation acceptance
+
+Use a trusted completed checkpoint and the prepared manifest containing a `val` shard. These commands only evaluate and do not resume training:
+
+```bash
+python eval-gpt2.py --checkpoint "$RUN_DIR/latest.pt" \
+  --data-dir data/fineweb-pretokenized-10B --device cuda --max-batches 20
+
+torchrun --standalone --nproc_per_node=2 eval-gpt2.py \
+  --checkpoint "$RUN_DIR/latest.pt" --data-dir data/fineweb-pretokenized-10B \
+  --device cuda --max-batches 20
+```
+
+Set `RUN_DIR` to your actual checkpoint directory. Expect `split: val`, 81,920 tokens for the default B=4/T=1024, the correct checkpoint step and close losses between one and two ranks (allow numerical reduction differences). Neither command writes a checkpoint. Repeat the single-process command to check repeatability. `--max-batches 0` covers all complete validation sequences and may take substantially longer.
+
+For periodic validation, append `--eval-every 2 --eval-batches 3` to a short training run. Expect validation after updates 2, 4, etc., and after the final update. Run the CPU regression suite to compare uninterrupted/resumed checkpoints with evaluation enabled, and evaluation enabled versus disabled. CUDA/NCCL validation still requires running this acceptance section on a GPU host; local CPU tests do not establish CUDA performance or numerical equivalence.

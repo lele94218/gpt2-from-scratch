@@ -223,6 +223,7 @@ import numpy as np
 
 from data import TokenLoader
 from checkpoint import save_checkpoint, load_checkpoint
+from evaluation import validation_data, evaluate
 
 
 def get_lr(it, max_lr, warmup_steps, max_steps):
@@ -255,6 +256,8 @@ def parse_args():
     parser.add_argument('--device', choices=['auto', 'cuda', 'cpu'], default='auto')
     parser.add_argument('--compile', action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument('--generate', action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument('--eval-every', type=int, default=0, help='Validate every N updates and at exit; 0 disables')
+    parser.add_argument('--eval-batches', type=int, default=20, help='Global validation batches; 0 evaluates all full sequences')
     # Defaults remain GPT-2 124M; smaller shapes make lifecycle tests inexpensive.
     parser.add_argument('--n-layer', type=int, default=12)
     parser.add_argument('--n-head', type=int, default=12)
@@ -269,6 +272,10 @@ def parse_args():
         parser.error('Invalid optimizer/scheduler configuration')
     if args.stop_after is not None and not 0 < args.stop_after <= args.max_steps:
         parser.error('stop-after must be between 1 and max-steps')
+    if args.eval_every < 0 or args.eval_batches < 0:
+        parser.error('Evaluation intervals and batch limits must be nonnegative')
+    if args.eval_every and not args.data_dir:
+        parser.error('--eval-every requires --data-dir with a val split')
     return args
 
 
@@ -304,6 +311,7 @@ def train(args, rank, world_size, device, ddp):
     torch.manual_seed(args.seed)
     torch.set_float32_matmul_precision('high')
     loader = TokenLoader(B, T, rank, world_size, args.input_file, args.data_dir)
+    val_data = validation_data(args.data_dir, T) if args.eval_every else None
     model_config = GPTConfig(vocab_size=50304, n_layer=args.n_layer, n_head=args.n_head, n_embd=args.n_embd)
     raw_model = GPT(model_config).to(device)  # Keep the original uncompiled module for saving.
     optimizer = raw_model.configure_optimizers(args.weight_decay, args.max_lr, device.type, master)
@@ -360,6 +368,10 @@ def train(args, rank, world_size, device, ddp):
             save_checkpoint(output, raw_model, optimizer, loader, step + 1, run_config, device)
             if master:
                 print(f'checkpoint: {output} (next step {step+1})', flush=True)
+        if args.eval_every and ((step + 1) % args.eval_every == 0 or step + 1 == end_step):
+            result = evaluate(raw_model, val_data, B, T, device, args.eval_batches)
+            if master:
+                print(f'validation step {step + 1}, val loss: {result["loss"]:.6f}, tokens: {result["tokens"]}, perplexity: {result["perplexity"]:.4f}', flush=True)
     # Checkpoint precedes generation: sampling must not change saved training RNG.
     if master and args.generate:
         generate(raw_model, device)
