@@ -4,6 +4,10 @@ A hands-on GPT-2 implementation following Andrej Karpathy's [Let's reproduce GPT
 
 Train on bundled Tiny Shakespeare or tokenized FineWeb(-Edu) shards, save checkpoints, and resume at the next optimizer step. The Transformer definition remains the original learning implementation. See [the implementation walkthrough](docs/fineweb-resume.md) for the new runtime changes.
 
+Once you have a base checkpoint, follow the [SFT learning guide](docs/sft.md) to
+prepare short English conversations, fine-tune on assistant answers, and chat with
+the result. This separate single-GPU path reuses the original GPT-2 model and tokenizer.
+
 ## Install on a Linux NVIDIA GPU machine
 
 Requirements: Git, internet access, a BF16-capable NVIDIA GPU and a compatible driver. The setup uses [uv](https://docs.astral.sh/uv/getting-started/installation/) and Python 3.12; it never changes host drivers.
