@@ -1,6 +1,7 @@
 """One conversation per example; no packing, truncation, or vocabulary changes."""
 import hashlib
 import json
+from array import array
 from pathlib import Path
 
 import tiktoken
@@ -80,6 +81,47 @@ def collate(records, seq_len):
     return x, y
 
 
+class IndexedConversations:
+    """Keep byte offsets in RAM; decode only the examples needed by each batch."""
+    def __init__(self, path, seq_len):
+        self.path = Path(path)
+        self.offsets = array('Q')
+        with self.path.open('rb') as f:
+            while True:
+                offset = f.tell()
+                line = f.readline()
+                if not line:
+                    break
+                record = json.loads(line)
+                x, y = record['input_ids'], record['labels']
+                if not 0 < len(x) == len(y) <= seq_len:
+                    raise ValueError('Invalid example length; increase seq-len or prepare shorter data')
+                if any(type(t) is not int or not 0 <= t < 50257 for t in x):
+                    raise ValueError('Invalid GPT-2 input token')
+                if any(type(t) is not int or not (t == IGNORE or 0 <= t < 50257) for t in y):
+                    raise ValueError('Invalid target token')
+                if not any(t != IGNORE for t in y) or y[-1] != 50256:
+                    raise ValueError('Example needs assistant targets including final EOT')
+                self.offsets.append(offset)
+
+    def __len__(self):
+        return len(self.offsets)
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            offsets = self.offsets[index]
+            with self.path.open('rb') as f:
+                records = []
+                for offset in offsets:
+                    f.seek(offset)
+                    records.append(json.loads(f.readline()))
+            return records
+        offset = self.offsets[index]  # also handles negative indices and IndexError
+        with self.path.open('rb') as f:
+            f.seek(offset)
+            return json.loads(f.readline())
+
+
 def load_data(directory, seq_len):
     root = Path(directory)
     manifest = json.loads((root / 'manifest.json').read_text())
@@ -91,20 +133,11 @@ def load_data(directory, seq_len):
         entry = manifest['splits'][split]
         if fingerprint(path) != entry['sha256']:
             raise ValueError(f'{split} checksum mismatch')
-        records = [json.loads(line) for line in path.read_text().splitlines()]
+        records = IndexedConversations(path, seq_len)
         if not records or len(records) != entry['examples']:
             raise ValueError(f'Invalid {split} size')
-        for record in records:
-            x, y = record['input_ids'], record['labels']
-            if not 0 < len(x) == len(y) <= seq_len:
-                raise ValueError('Invalid example length; increase seq-len or prepare shorter data')
-            if any(type(t) is not int or not 0 <= t < 50257 for t in x):
-                raise ValueError('Invalid GPT-2 input token')
-            if any(type(t) is not int or not (t == IGNORE or 0 <= t < 50257) for t in y):
-                raise ValueError('Invalid target token')
-            if not any(t != IGNORE for t in y) or y[-1] != 50256:
-                raise ValueError('Example needs assistant targets including final EOT')
         result[split] = records
+        print(f'Indexed {len(records):,} {split} conversations (on-disk JSONL)', flush=True)
     return result, fingerprint(root / 'manifest.json')
 
 

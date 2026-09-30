@@ -12,7 +12,7 @@ import unittest
 import tiktoken
 import torch
 
-from chat_data import (IGNORE, TEMPLATE, ConversationLoader, collate,
+from chat_data import (IGNORE, TEMPLATE, ConversationLoader, IndexedConversations, collate,
                        encode_conversation, encode_prompt, load_data, render)
 from prepare_chat import write_split
 from train_sft import backward_update, evaluate
@@ -48,6 +48,24 @@ class TinyModel(torch.nn.Module):
 
 
 class SFTTests(unittest.TestCase):
+    def test_disk_index_preserves_rows_slices_and_shuffled_batches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'train.jsonl'
+            records = [encode_conversation(messages(str(i), 'Yes.' * (i+1))) for i in range(7)]
+            path.write_text(''.join(json.dumps(r)+'\n' for r in records))
+            indexed = IndexedConversations(path, 64)
+            self.assertEqual(len(indexed), len(records))
+            self.assertEqual(indexed[-1], records[-1])
+            self.assertEqual(indexed[1:6:2], records[1:6:2])
+            self.assertEqual(indexed[:], records)
+            self.assertEqual(indexed[99:], [])
+            with self.assertRaises(IndexError):
+                indexed[len(records)]
+            disk = ConversationLoader(indexed, 2, 2, 64, 42)
+            memory = ConversationLoader(records, 2, 2, 64, 42)
+            for _ in range(5):
+                assert_nested_equal(self, disk.next_update(), memory.next_update())
+
     def test_zero_count_scans_all_and_rejects_empty_or_negative(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -141,6 +141,13 @@ substantial source data even for a small selection. It needs an empty output
 directory; an interrupted preparation can reuse the Hugging Face cache but must
 write to a fresh output directory. Do not modify data during a run.
 
+Training verifies each JSONL file and scans its examples one at a time, keeping
+only an eight-byte file offset per conversation in RAM. It then reads just the
+examples needed by each update. This avoids expanding the entire dataset into
+Python integer lists, which can exhaust a 16GB host with the full 1024-token
+selection. The initial integrity scan can take a minute before training logs
+appear. Existing prepared files and resume cursors remain compatible.
+
 ## Stage 1: a short lifecycle smoke test
 
 Set `BASE_CKPT` to a **trusted** local copy of your final pretraining checkpoint.
