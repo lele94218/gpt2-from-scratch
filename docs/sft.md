@@ -104,6 +104,22 @@ python prepare_chat.py \
   --output-dir data/chat-10k-512
 ```
 
+To scan the entire training split and retain **all eligible** complete conversations
+within the model's 1024-token context, use zero as the count:
+
+```bash
+python prepare_chat.py \
+  --train-examples 0 --val-examples 500 --seq-len 1024 \
+  --output-dir data/chat-all-1024
+```
+
+`--val-examples 0` similarly selects all eligible validation conversations; the
+default remains 500. Zero removes the count limit, not the length, role validation,
+or deduplication rules. Positive counts still require that many eligible examples;
+an empty resulting split is always an error. The manifest records requested counts
+and actual counts. Use a fresh directory: this does not recover a previous incomplete
+preparation. Train with the matching `--seq-len 1024` and new data/output directories.
+
 The source is [HuggingFaceTB/smol-smoltalk](https://huggingface.co/datasets/HuggingFaceTB/smol-smoltalk),
 revision `f73fe857d519ff6ac5af2ea67c4d3834da7b8bcc`, marked Apache-2.0. Preserve this
 attribution and source licensing information if redistributing derived data.

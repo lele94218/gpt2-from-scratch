@@ -48,6 +48,26 @@ class TinyModel(torch.nn.Module):
 
 
 class SFTTests(unittest.TestCase):
+    def test_zero_count_scans_all_and_rejects_empty_or_negative(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            good = dict(messages=messages())
+            rows = [good, good, dict(messages=messages(answer='long ' * 100)),
+                    dict(messages=[]), dict(messages=messages('Why?', 'Because.'))]
+            stats = write_split(rows, root/'all.jsonl', 0, 32, set())
+            self.assertEqual(stats['scanned'], 5)
+            self.assertEqual(stats['examples'], 2)
+            self.assertEqual(stats['duplicate'], 1)
+            self.assertEqual(stats['too_long'], 1)
+            self.assertEqual(stats['invalid'], 1)
+            self.assertEqual(len((root/'all.jsonl').read_text().splitlines()), 2)
+            with self.assertRaisesRegex(ValueError, 'No eligible'):
+                write_split([], root/'empty.jsonl', 0, 32, set())
+            with self.assertRaisesRegex(ValueError, 'nonnegative'):
+                write_split(rows, root/'negative.jsonl', -1, 32, set())
+            with self.assertRaisesRegex(ValueError, 'Only found 2/3'):
+                write_split(rows, root/'short.jsonl', 3, 32, set())
+
     def test_chat_stops_at_eot_and_excludes_padded_vocab(self):
         enc = tiktoken.get_encoding('gpt2')
         class EndingModel(torch.nn.Module):
