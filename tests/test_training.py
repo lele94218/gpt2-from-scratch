@@ -117,6 +117,58 @@ class TrainingTests(unittest.TestCase):
         restore_rng(state, device)
         assert_nested_equal(self, expected, draw())
 
+    def test_new_phase_weights_optimizer_provenance_and_restart(self):
+        env = dict(os.environ, OMP_NUM_THREADS='1')
+        common = [sys.executable, str(ROOT/'train-gpt2.py'), '--device', 'cpu',
+                  '--no-compile', '--no-generate', '--n-layer', '1', '--n-head', '1',
+                  '--n-embd', '16', '--batch-size', '1', '--seq-len', '4']
+        def run(extra, ok=True):
+            result = subprocess.run(common+extra, env=env, capture_output=True, text=True, timeout=120)
+            if ok:
+                self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
+            else:
+                self.assertNotEqual(result.returncode, 0)
+            return result.stdout+result.stderr
+        base = self.root/'base/latest.pt'
+        run(['--max-steps', '2', '--total-batch-size', '8', '--output-dir', str(base.parent)])
+        original = torch.load(base, map_location='cpu', weights_only=False)
+        phase = ['--max-steps', '3', '--warmup-steps', '1', '--total-batch-size', '16',
+                 '--data-dir', str(self.data)]
+        # Negligible LR isolates weight initialization from the subsequent update.
+        warm = self.root/'weights'
+        run(phase+['--init-from', str(base), '--max-lr', '1e-30', '--stop-after', '1',
+                   '--output-dir', str(warm)])
+        initialized = torch.load(warm/'latest.pt', map_location='cpu', weights_only=False)
+        for key, tensor in original['model'].items():
+            torch.testing.assert_close(initialized['model'][key], tensor, rtol=0, atol=1e-20)
+        self.assertTrue(all(int(s['step']) == 1 for s in initialized['optimizer']['state'].values()))
+        self.assertNotEqual(original['ranks'][0]['loader']['fingerprint'],
+                            initialized['ranks'][0]['loader']['fingerprint'])
+        provenance = initialized['config']['initialization']
+        self.assertEqual(provenance['source_next_step'], 2)
+        self.assertEqual(provenance['tokens_before'], 16)
+        self.assertEqual(len(provenance['checkpoint_sha256']), 64)
+        error = run(phase+['--init-from', str(base), '--n-embd', '8',
+                           '--output-dir', str(self.root/'bad')], ok=False)
+        self.assertIn('Initialization model configuration differs', error)
+        full, part = self.root/'phase-full', self.root/'phase-part'
+        full_log = run(phase+['--init-from', str(base), '--output-dir', str(full)])
+        first_log = run(phase+['--init-from', str(base), '--output-dir', str(part), '--stop-after', '1'])
+        # Resuming this phase must not depend on the source checkpoint still being present.
+        base.rename(base.with_name('original.pt'))
+        second_log = run(phase+['--resume', str(part/'latest.pt'), '--output-dir', str(part)])
+        pattern = r'step (\d+), loss: ([^,\n]+), lr: ([^ ]+)'
+        self.assertEqual(re.findall(pattern, full_log), re.findall(pattern, first_log+second_log))
+        a = torch.load(full/'latest.pt', map_location='cpu', weights_only=False)
+        b = torch.load(part/'latest.pt', map_location='cpu', weights_only=False)
+        assert_nested_equal(self, a, b)
+        self.assertEqual(a['config']['initialization'], provenance)
+        # Chained phases accumulate token provenance instead of resetting the total.
+        child = self.root/'child'
+        run(phase+['--init-from', str(full/'latest.pt'), '--stop-after', '1', '--output-dir', str(child)])
+        chained = torch.load(child/'latest.pt', map_location='cpu', weights_only=False)
+        self.assertEqual(chained['config']['initialization']['tokens_before'], 16+3*16)
+
     def test_restart_matches_uninterrupted(self):
         device = os.environ.get('TEST_DEVICE', 'cpu')
         worlds = [int(x) for x in os.environ.get('TEST_WORLDS', '1,2').split(',')]

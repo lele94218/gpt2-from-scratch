@@ -222,7 +222,7 @@ import random
 import numpy as np
 
 from data import TokenLoader
-from checkpoint import save_checkpoint, load_checkpoint
+from checkpoint import save_checkpoint, load_checkpoint, load_initial_weights
 from evaluation import validation_data, evaluate
 
 
@@ -252,7 +252,9 @@ def parse_args():
     parser.add_argument('--seed', type=int, default=1337)
     parser.add_argument('--checkpoint-every', type=int, default=100, help='Steps between atomic latest.pt saves; also save at normal exit')
     parser.add_argument('--output-dir', default='checkpoints')
-    parser.add_argument('--resume', help='Trusted latest.pt file; same config and data required')
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument('--resume', help='Trusted latest.pt file; same config and data required')
+    source.add_argument('--init-from', help='Trusted pretraining checkpoint: load weights only; start a new optimizer, schedule and data cursor')
     parser.add_argument('--device', choices=['auto', 'cuda', 'cpu'], default='auto')
     parser.add_argument('--compile', action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument('--generate', action=argparse.BooleanOptionalAction, default=True)
@@ -314,6 +316,16 @@ def train(args, rank, world_size, device, ddp):
     val_data = validation_data(args.data_dir, T) if args.eval_every else None
     model_config = GPTConfig(vocab_size=50304, n_layer=args.n_layer, n_head=args.n_head, n_embd=args.n_embd)
     raw_model = GPT(model_config).to(device)  # Keep the original uncompiled module for saving.
+    initialization = None
+    if args.init_from:
+        initialization = load_initial_weights(args.init_from, raw_model, asdict(model_config))
+        if master:
+            print(f'initialized from: {args.init_from}; previous tokens: {initialization["tokens_before"]}; new optimizer and schedule', flush=True)
+    elif args.resume:
+        # The new phase is self-contained: its original initialization file need not exist.
+        metadata = torch.load(args.resume, map_location='cpu', weights_only=False, mmap=True)
+        initialization = metadata['config'].get('initialization')
+        del metadata
     optimizer = raw_model.configure_optimizers(args.weight_decay, args.max_lr, device.type, master)
     model = torch.compile(raw_model) if args.compile else raw_model
     if ddp:
@@ -324,6 +336,8 @@ def train(args, rank, world_size, device, ddp):
                       max_lr=args.max_lr, weight_decay=args.weight_decay, seed=args.seed,
                       device=device.type, compile=args.compile, torch_version=str(torch.__version__),
                       precision='bf16' if device.type == 'cuda' else 'fp32')
+    if initialization is not None:
+        run_config['initialization'] = initialization
     start_step = 0
     if args.resume:
         # Restore after model initialization/wrapping, which may consume RNG.

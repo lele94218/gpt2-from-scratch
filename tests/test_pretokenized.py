@@ -86,6 +86,43 @@ class PretokenizedTests(unittest.TestCase):
         self.assertTrue((out / 'manifest.json').exists())
         self.assertTrue(all(c['revision'] == prep.REVISION for c in calls))
 
+    def test_offline_range_selection_and_source_integrity(self):
+        cache = self.root/'cache'
+        cache.mkdir()
+        names = ['edu_fineweb_val_000000.bin', 'edu_fineweb_train_000041.bin',
+                 'edu_fineweb_train_000042.bin']
+        entries = []
+        for name in names:
+            path = cache/name
+            path.write_bytes(self.source.read_bytes())
+            entries.append(dict(file=name, bytes=path.stat().st_size, sha256=prep.digest(path)))
+        manifest = self.root/'sources.json'
+        sources = dict(dataset=prep.DATASET, revision=prep.REVISION, files=entries)
+        manifest.write_text(json.dumps(sources))
+        out = self.root/'range'
+        real_convert = prep.convert_shard
+        def small_convert(source, target):
+            return real_convert(source, target, len(self.tokens))
+        with patch.object(prep, 'convert_shard', side_effect=small_convert):
+            result = prep.prepare(out, cache, 2, train_start=41, source_manifest=manifest)
+        self.assertEqual([s['file'] for s in result['shards']],
+                         ['fineweb_val_000000.npy', 'fineweb_train_000041.npy', 'fineweb_train_000042.npy'])
+        self.assertEqual(result['source']['train_start'], 41)
+        self.assertEqual(len(TokenLoader(1, 4, 0, 1, data_dir=out).arrays), 2)
+        sources['revision'] = '0'*40
+        manifest.write_text(json.dumps(sources))
+        with self.assertRaisesRegex(ValueError, 'dataset/revision'):
+            prep.prepare(out, cache, 2, train_start=41, source_manifest=manifest)
+        self.assertTrue((out/'manifest.json').exists())
+        sources['revision'] = prep.REVISION
+        manifest.write_text(json.dumps(sources))
+        (cache/names[0]).write_bytes(b'x'*self.source.stat().st_size)
+        with self.assertRaisesRegex(ValueError, 'Source checksum'):
+            prep.prepare(out, cache, 2, train_start=41, source_manifest=manifest)
+        self.assertFalse((out/'manifest.json').exists())
+        with self.assertRaisesRegex(ValueError, 'range'):
+            prep.prepare(self.root/'invalid', cache, 2, train_start=999)
+
 
 if __name__ == '__main__':
     unittest.main()

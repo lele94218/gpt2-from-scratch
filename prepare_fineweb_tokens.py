@@ -67,17 +67,37 @@ def convert_shard(source, target, expected_tokens=TOKENS_PER_SHARD):
     return dict(file=target.name, tokens=count, sha256=digest(target))
 
 
-def prepare(output_dir, cache_dir, train_shards, revision=REVISION, download=None):
-    if not 1 <= train_shards <= 999:
-        raise ValueError('train-shards must be between 1 and 999')
+def prepare(output_dir, cache_dir, train_shards, revision=REVISION, download=None,
+            *, train_start=1, source_manifest=None):
+    if not 1 <= train_shards <= 999 or not 1 <= train_start <= 1000 - train_shards:
+        raise ValueError('Training shard range must be within 1..999')
     if len(revision) != 40 or any(c not in '0123456789abcdef' for c in revision):
         raise ValueError('revision must be a full lowercase dataset commit SHA')
-    if download is None:
+    selection = [('val', 0)] + [('train', i) for i in range(train_start, train_start + train_shards)]
+    if source_manifest is not None:
+        if download is not None:
+            raise ValueError('source-manifest and download callback are mutually exclusive')
+        sources = json.loads(Path(source_manifest).read_text())
+        if sources.get('dataset') != DATASET or sources.get('revision') != revision:
+            raise ValueError('Source manifest dataset/revision differs')
+        source_entries = {entry['file']: entry for entry in sources['files']}
+        if len(source_entries) != len(sources['files']):
+            raise ValueError('Duplicate files in source manifest')
+        required = {f'edu_fineweb_{split}_{i:06d}.bin' for split, i in selection}
+        if not required <= source_entries.keys():
+            raise ValueError('Source manifest is missing requested shards')
+
+        def download(*, filename, local_dir, **_):
+            path = Path(local_dir) / filename
+            entry = source_entries[filename]
+            if path.stat().st_size != entry['bytes'] or digest(path) != entry['sha256']:
+                raise ValueError(f'Source checksum mismatch: {path}')
+            return path
+    elif download is None:
         from huggingface_hub import hf_hub_download
         download = hf_hub_download
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
-    selection = [('val', 0)] + [('train', i) for i in range(1, train_shards + 1)]
     filenames = [f'fineweb_{split}_{i:06d}.npy' for split, i in selection]
     plan = dict(dataset=DATASET, revision=revision, files=filenames)
     plan_path = root / '.preparation.json'
@@ -109,7 +129,7 @@ def prepare(output_dir, cache_dir, train_shards, revision=REVISION, download=Non
         entries.append(entry)
         print(f"  verified: {entry['tokens']:,} tokens", flush=True)
     manifest = dict(tokenizer='gpt2', source=dict(dataset=DATASET, revision=revision,
-                    format='llm.c GPT-2', train_shards=train_shards),
+                    format='llm.c GPT-2', train_shards=train_shards, train_start=train_start),
                     total_tokens=sum(s['tokens'] for s in entries), shards=entries)
     atomic_json(manifest_path, manifest)
     for split in ('train', 'val'):
@@ -123,11 +143,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--train-shards', type=int, default=100,
                         help='100M tokens per shard; 100 = 10B training tokens, plus one val shard')
+    parser.add_argument('--train-start', type=int, default=1,
+                        help='First training shard index; 41 with 60 shards selects the new 6B after the first 4B')
+    parser.add_argument('--source-manifest', help='Offline mode: use transferred BIN files and verify a dataset/revision/files SHA-256 manifest')
     parser.add_argument('--output-dir', default='data/fineweb-pretokenized-10B')
     parser.add_argument('--cache-dir', default='data/fineweb-bin-cache')
     parser.add_argument('--revision', default=REVISION, help='Pinned dataset commit SHA')
     args = parser.parse_args()
-    prepare(args.output_dir, args.cache_dir, args.train_shards, args.revision)
+    prepare(args.output_dir, args.cache_dir, args.train_shards, args.revision,
+            train_start=args.train_start, source_manifest=args.source_manifest)
 
 
 if __name__ == '__main__':

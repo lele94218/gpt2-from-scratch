@@ -1,4 +1,5 @@
 """Save only at optimizer-step boundaries; keep optimizer, cursor and rank-local RNG."""
+import hashlib
 import os
 import random
 from pathlib import Path
@@ -19,6 +20,27 @@ def restore_rng(state, device):
     torch.set_rng_state(state['cpu'])
     if device.type == 'cuda':
         torch.cuda.set_rng_state(state['cuda'], device)
+
+
+def load_initial_weights(path, raw_model, model_config):
+    """Start a new pretraining phase from weights, without restoring training state."""
+    payload = torch.load(path, map_location='cpu', weights_only=False, mmap=True)
+    if payload.get('format_version') != 1:
+        raise ValueError('Unsupported initialization checkpoint format')
+    source = payload['config']
+    if source.get('model') != model_config:
+        raise ValueError('Initialization model configuration differs')
+    if source.get('stage') == 'sft' or 'total_batch_size' not in source:
+        raise ValueError('--init-from requires a pretraining checkpoint')
+    step = payload['next_step']
+    if not 0 <= step <= source['max_steps']:
+        raise ValueError('Invalid initialization checkpoint step')
+    raw_model.load_state_dict(payload['model'], strict=True)
+    prior_tokens = source.get('initialization', {}).get('tokens_before', 0)
+    with Path(path).open('rb') as stream:
+        sha256 = hashlib.file_digest(stream, 'sha256').hexdigest()
+    return dict(checkpoint_sha256=sha256, source_next_step=step,
+                tokens_before=prior_tokens + step * source['total_batch_size'])
 
 
 def save_checkpoint(path, raw_model, optimizer, loader, next_step, run_config, device):

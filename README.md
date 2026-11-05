@@ -92,6 +92,21 @@ The first shard is held out as validation data. Validation-loss evaluation is av
 
 Dataset attribution: FineWeb/FineWeb-Edu are published by HuggingFaceFW under ODC-By; see their dataset cards for attribution and use conditions. No FineWeb data or model checkpoints are committed here.
 
+## Generate text from an existing checkpoint
+
+For a base model, supply a raw text prefix to continue:
+
+```bash
+python generate.py --checkpoint checkpoints/experiment/best.pt \
+  --prompt "Once upon a time, in a small village," \
+  --max-new-tokens 128 --temperature 0.8 --top-k 50 --seed 42
+```
+
+Use your saved `latest.pt` if the run has no `best.pt`. `--temperature 0` selects
+greedy decoding. Generation stops at the end-of-text token, the requested length,
+or the model's 1024-token context limit. `--device auto` uses CUDA when available;
+`--device cpu` is also supported. For role-formatted SFT conversation, use `chat.py`.
+
 ## Evaluate an existing checkpoint
 
 No retraining is needed. Model dimensions are read from the checkpoint; optimizer and training cursors are not restored or updated. Existing format-version-1 checkpoints remain compatible.
@@ -122,6 +137,12 @@ python train-gpt2.py --data-dir data/fineweb-pretokenized-10B \
 `--eval-every 250` evaluates after every 250 updates and at normal exit. `--eval-every 0` (default) keeps evaluation off, including text-only runs. `--eval-batches 0` requests the full validation split. Every evaluation restarts from the same validation prefix, preserves RNG state and restores training mode. It uses a separate data source and never advances the training cursor or updates parameters. These evaluation settings may be changed on resume without changing the checkpoint format or LR horizon. Training checkpoints are saved before a coincident evaluation; evaluation time is excluded from the printed training-step throughput.
 
 ## Save and resume correctly
+
+If a completed run needs **additional data and a new training schedule**, use
+`--init-from` to start a new phase from its model weights. This resets the optimizer
+and data cursor; `--resume` retains their state and requires unchanged settings.
+See [continued pretraining](docs/continued-pretraining.md) for a 4B → 10B workflow,
+training-shard ranges, offline source verification and checkpoint provenance.
 
 Keep the LR horizon fixed across interruption. `--max-steps` is the total intended training horizon, while `--stop-after` is an absolute completed-step count for a planned pause:
 
