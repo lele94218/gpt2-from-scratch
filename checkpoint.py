@@ -74,6 +74,8 @@ def save_checkpoint(path, raw_model, optimizer, loader, next_step, run_config, d
 def load_checkpoint(path, raw_model, optimizer, loader, run_config, device):
     # Includes Python/NumPy RNG objects. Load only your own trusted checkpoints.
     payload = torch.load(path, map_location='cpu', weights_only=False)
+    if payload.get('artifact_type') == 'weights_only':
+        raise ValueError('Weights-only checkpoint cannot resume training; use --init-from to start a new phase')
     if payload['format_version'] != 1 or payload['config'] != run_config:
         raise ValueError('Resume configuration differs: retain model, batch, LR horizon, world size, device and precision settings')
     rank = dist.get_rank() if dist.is_initialized() else 0

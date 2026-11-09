@@ -8,6 +8,64 @@ Once you have a base checkpoint, follow the [SFT learning guide](docs/sft.md) to
 prepare short English conversations, fine-tune on assistant answers, and chat with
 the result. This separate single-GPU path reuses the original GPT-2 model and tokenizer.
 
+## Recorded experiments
+
+The lab has completed a 4B-token pretraining run, a separate 6B-token continuation
+phase, and several exploratory SFT runs on one NVIDIA L20. These are educational
+experiments with a **124,475,904-parameter model**, not a claim of a reliable chat
+assistant or an exact reproduction of Karpathy's uninterrupted 10B run.
+
+| Pretraining checkpoint | Validation loss | Perplexity | Training time |
+|---|---:|---:|---|
+| 4B phase | 3.2008 | 24.55 | 11h 58m |
+| Approximately 10B, selected best | 3.1079 | 22.37 | A further 17h 56m |
+
+Both checkpoints were evaluated on the same **2,097,152 held-out tokens**, not the
+entire 100M-token validation shard. The continuation completed approximately 10B
+cumulative processed tokens; its selected best checkpoint was saved at about
+**9.964B**. The two phases used different schedules and a fresh optimizer at the
+phase boundary.
+
+![Pretraining and continuation validation curves](docs/assets/pretraining-comparison.png)
+
+The latest 20,000-example SFT experiment improved strict short-task performance
+on a newly frozen test set, but arithmetic and open-ended answers remain weak:
+
+| SFT variant | Strict programmatic tasks | Natural held-out reference loss |
+|---|---:|---:|
+| Initial mixed SFT, 10k examples | 0/256 | 1.8404 |
+| Focused short-task SFT, 4,871 examples | 67/256 (26.2%) | 2.0245 |
+| Expanded SFT, 20k examples | 139/256 (54.3%) | 1.6694 |
+
+Strict scoring includes the requested output format; it is **not general QA
+accuracy**. The expanded model still scored 0/32 on addition and 1/32 on
+subtraction in the answer-only test. Open-ended outputs can repeat, ignore
+instructions or invent facts. See [experiment details and limitations](docs/training-results.md),
+[machine-readable metrics](docs/experiment-metrics.json), and
+[unedited SFT samples](docs/sft20k-samples.json).
+
+## Model artifacts
+
+Check [GitHub Releases](https://github.com/lele94218/gpt2-from-scratch/releases)
+for published model attachments. Weights are kept outside Git history. Release
+notes identify the exact artifacts and their checksums; a local training run or
+backup does not automatically make a checkpoint downloadable.
+
+The repository's `.pt` format works with `generate.py` for base-model completion
+and `chat.py` for SFT conversation. It is not a Hugging Face Transformers export.
+
+To prepare a smaller, weights-only release file from a **trusted** checkpoint:
+
+```bash
+python export_weights.py --checkpoint checkpoints/experiment/best.pt \
+  --output checkpoints/releases/model-weights.pt
+```
+
+The exporter preserves model tensors and configuration, verifies the result, and
+removes optimizer/RNG/data-cursor state. Such an artifact supports inference and
+`--init-from`, but **cannot be used with `--resume`**. Keep the original full
+checkpoint if exact training-state recovery is needed.
+
 ## Install on a Linux NVIDIA GPU machine
 
 Requirements: Git, internet access, a BF16-capable NVIDIA GPU and a compatible driver. The setup uses [uv](https://docs.astral.sh/uv/getting-started/installation/) and Python 3.12; it never changes host drivers.

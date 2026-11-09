@@ -1,0 +1,332 @@
+{
+  "pretraining": {
+    "old_4b": {
+      "checkpoint_step": 30518,
+      "split": "val",
+      "device": "cuda",
+      "seq_len": 1024,
+      "batch_size": 8,
+      "max_batches": 256,
+      "loss": 3.2008168334141374,
+      "tokens": 2097152,
+      "perplexity": 24.552577373995
+    },
+    "best_10b": {
+      "checkpoint_step": 45500,
+      "split": "val",
+      "device": "cuda",
+      "seq_len": 1024,
+      "batch_size": 8,
+      "max_batches": 256,
+      "loss": 3.1079134410247207,
+      "tokens": 2097152,
+      "perplexity": 22.374310342956313
+    },
+    "latest_10b": {
+      "checkpoint_step": 45777,
+      "split": "val",
+      "device": "cuda",
+      "seq_len": 1024,
+      "batch_size": 8,
+      "max_batches": 256,
+      "loss": 3.108000217936933,
+      "tokens": 2097152,
+      "perplexity": 22.37625200076507
+    },
+    "loss_decrease": 0.0929033923894167,
+    "perplexity_decrease_percent": 8.87184672247815
+  },
+  "sft20k": {
+    "test_results": {
+      "mixed_sft": {
+        "metrics": {
+          "count": 256,
+          "correct": 0,
+          "strict_accuracy": 0.0,
+          "format_rate": 0.0,
+          "eot_rate": 0.3671875,
+          "repetition_rate": 0.45703125
+        },
+        "by_category": {
+          "add": {
+            "count": 32,
+            "correct": 0,
+            "strict_accuracy": 0.0,
+            "format_rate": 0.0,
+            "eot_rate": 0.0,
+            "repetition_rate": 0.625
+          },
+          "compare": {
+            "count": 32,
+            "correct": 0,
+            "strict_accuracy": 0.0,
+            "format_rate": 0.0,
+            "eot_rate": 0.09375,
+            "repetition_rate": 0.5
+          },
+          "copy": {
+            "count": 32,
+            "correct": 0,
+            "strict_accuracy": 0.0,
+            "format_rate": 0.0,
+            "eot_rate": 0.78125,
+            "repetition_rate": 0.28125
+          },
+          "extract": {
+            "count": 32,
+            "correct": 0,
+            "strict_accuracy": 0.0,
+            "format_rate": 0.0,
+            "eot_rate": 0.375,
+            "repetition_rate": 0.5
+          },
+          "lowercase": {
+            "count": 32,
+            "correct": 0,
+            "strict_accuracy": 0.0,
+            "format_rate": 0.0,
+            "eot_rate": 0.8125,
+            "repetition_rate": 0.125
+          },
+          "sort": {
+            "count": 32,
+            "correct": 0,
+            "strict_accuracy": 0.0,
+            "format_rate": 0.0,
+            "eot_rate": 0.03125,
+            "repetition_rate": 0.65625
+          },
+          "subtract": {
+            "count": 32,
+            "correct": 0,
+            "strict_accuracy": 0.0,
+            "format_rate": 0.0,
+            "eot_rate": 0.125,
+            "repetition_rate": 0.71875
+          },
+          "uppercase": {
+            "count": 32,
+            "correct": 0,
+            "strict_accuracy": 0.0,
+            "format_rate": 0.0,
+            "eot_rate": 0.71875,
+            "repetition_rate": 0.25
+          }
+        },
+        "natural_test": {
+          "loss": 1.8404284814948908,
+          "answer_tokens": 11129
+        }
+      },
+      "previous_short": {
+        "metrics": {
+          "count": 256,
+          "correct": 67,
+          "strict_accuracy": 0.26171875,
+          "format_rate": 0.7109375,
+          "eot_rate": 0.99609375,
+          "repetition_rate": 0.00390625
+        },
+        "by_category": {
+          "add": {
+            "count": 32,
+            "correct": 0,
+            "strict_accuracy": 0.0,
+            "format_rate": 1.0,
+            "eot_rate": 1.0,
+            "repetition_rate": 0.0
+          },
+          "compare": {
+            "count": 32,
+            "correct": 9,
+            "strict_accuracy": 0.28125,
+            "format_rate": 1.0,
+            "eot_rate": 1.0,
+            "repetition_rate": 0.0
+          },
+          "copy": {
+            "count": 32,
+            "correct": 30,
+            "strict_accuracy": 0.9375,
+            "format_rate": 0.9375,
+            "eot_rate": 1.0,
+            "repetition_rate": 0.0
+          },
+          "extract": {
+            "count": 32,
+            "correct": 13,
+            "strict_accuracy": 0.40625,
+            "format_rate": 1.0,
+            "eot_rate": 1.0,
+            "repetition_rate": 0.0
+          },
+          "lowercase": {
+            "count": 32,
+            "correct": 12,
+            "strict_accuracy": 0.375,
+            "format_rate": 0.375,
+            "eot_rate": 0.96875,
+            "repetition_rate": 0.03125
+          },
+          "sort": {
+            "count": 32,
+            "correct": 0,
+            "strict_accuracy": 0.0,
+            "format_rate": 0.3125,
+            "eot_rate": 1.0,
+            "repetition_rate": 0.0
+          },
+          "subtract": {
+            "count": 32,
+            "correct": 1,
+            "strict_accuracy": 0.03125,
+            "format_rate": 1.0,
+            "eot_rate": 1.0,
+            "repetition_rate": 0.0
+          },
+          "uppercase": {
+            "count": 32,
+            "correct": 2,
+            "strict_accuracy": 0.0625,
+            "format_rate": 0.0625,
+            "eot_rate": 1.0,
+            "repetition_rate": 0.0
+          }
+        },
+        "natural_test": {
+          "loss": 2.0244698409218387,
+          "answer_tokens": 11129
+        }
+      },
+      "new20k": {
+        "metrics": {
+          "count": 256,
+          "correct": 139,
+          "strict_accuracy": 0.54296875,
+          "format_rate": 0.9375,
+          "eot_rate": 1.0,
+          "repetition_rate": 0.0
+        },
+        "by_category": {
+          "add": {
+            "count": 32,
+            "correct": 0,
+            "strict_accuracy": 0.0,
+            "format_rate": 1.0,
+            "eot_rate": 1.0,
+            "repetition_rate": 0.0
+          },
+          "compare": {
+            "count": 32,
+            "correct": 25,
+            "strict_accuracy": 0.78125,
+            "format_rate": 1.0,
+            "eot_rate": 1.0,
+            "repetition_rate": 0.0
+          },
+          "copy": {
+            "count": 32,
+            "correct": 30,
+            "strict_accuracy": 0.9375,
+            "format_rate": 1.0,
+            "eot_rate": 1.0,
+            "repetition_rate": 0.0
+          },
+          "extract": {
+            "count": 32,
+            "correct": 32,
+            "strict_accuracy": 1.0,
+            "format_rate": 1.0,
+            "eot_rate": 1.0,
+            "repetition_rate": 0.0
+          },
+          "lowercase": {
+            "count": 32,
+            "correct": 26,
+            "strict_accuracy": 0.8125,
+            "format_rate": 0.8125,
+            "eot_rate": 1.0,
+            "repetition_rate": 0.0
+          },
+          "sort": {
+            "count": 32,
+            "correct": 3,
+            "strict_accuracy": 0.09375,
+            "format_rate": 0.9375,
+            "eot_rate": 1.0,
+            "repetition_rate": 0.0
+          },
+          "subtract": {
+            "count": 32,
+            "correct": 1,
+            "strict_accuracy": 0.03125,
+            "format_rate": 1.0,
+            "eot_rate": 1.0,
+            "repetition_rate": 0.0
+          },
+          "uppercase": {
+            "count": 32,
+            "correct": 22,
+            "strict_accuracy": 0.6875,
+            "format_rate": 0.75,
+            "eot_rate": 1.0,
+            "repetition_rate": 0.0
+          }
+        },
+        "natural_test": {
+          "loss": 1.6693566869303311,
+          "answer_tokens": 11129
+        }
+      }
+    },
+    "worked_results": {
+      "previous_short": {
+        "metrics": {
+          "count": 64,
+          "correct": 0,
+          "strict_accuracy": 0.0,
+          "format_rate": 0.0,
+          "eot_rate": 1.0,
+          "repetition_rate": 0.0
+        },
+        "consistent_equations": 0
+      },
+      "new20k": {
+        "metrics": {
+          "count": 64,
+          "correct": 5,
+          "strict_accuracy": 0.078125,
+          "format_rate": 1.0,
+          "eot_rate": 1.0,
+          "repetition_rate": 0.0
+        },
+        "consistent_equations": 5
+      }
+    },
+    "data_audit": {
+      "total_training_examples": 20000,
+      "unique_procedural_tasks": 3000,
+      "procedural_test_count": 256,
+      "natural_test_count": 200,
+      "development_tasks": 256,
+      "natural_validation_count": 500,
+      "answer_tokens": 572907,
+      "math_answer_tokens": 120000,
+      "math_token_fraction": 0.20945807958359733,
+      "by_category": {
+        "add": 60000,
+        "subtract": 60000,
+        "compare": 2000,
+        "sort": 10000,
+        "copy": 1792,
+        "uppercase": 4068,
+        "lowercase": 2212,
+        "extract": 1880
+      },
+      "procedural_semantic_overlap": 0,
+      "historical_procedural_test_overlap": 0,
+      "natural_test_sha256": "529a317d507982788a04247235a71ceb22c1c236d4859d4d15eee7c7559aadf2",
+      "note": "Natural prompts use normalized-text deduplication; semantic paraphrase leakage and factual correctness are not exhaustively verified."
+    }
+  }
+}

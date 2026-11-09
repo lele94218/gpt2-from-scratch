@@ -1,0 +1,38 @@
+{
+  "stage": "sft",
+  "step": 625,
+  "temperature": 0,
+  "max_new_tokens": 128,
+  "results": [
+    {
+      "prompt": "Hello! Please introduce yourself in one sentence.",
+      "answer": "I'm ready to help you understand the world of mathematics. What's the first question or problem you'd like to discuss? Do you have a specific topic you'd like to discuss, or are you looking for a specific approach to a problem?",
+      "stopped_on_eot": true
+    },
+    {
+      "prompt": "Explain what a cat is in one short sentence.",
+      "answer": "A cat is a small, furry, and furry animal that can be found in various parts of the world. They are known for their unique and unique behavior, and they are often referred to as \"cats\" by their owners.",
+      "stopped_on_eot": true
+    },
+    {
+      "prompt": "Rewrite this politely: Give me the book now.",
+      "answer": "I'm sorry for the misunderstanding, but as a bookkeeper, I'm not equipped to assist with bookkeeping. However, I can provide you with the necessary information and assistance. Please go ahead and share the book you'd like me to check, and I'll do my best to provide you with the most accurate and helpful information.",
+      "stopped_on_eot": true
+    },
+    {
+      "prompt": "Summarize in one sentence: Alice planted a seed. She watered it every day. After a week, a small green sprout appeared.",
+      "answer": "Alice planted a seed, and she watered it every day. After a week, a small green sprout appeared.",
+      "stopped_on_eot": true
+    },
+    {
+      "prompt": "What is a prime number? Answer briefly.",
+      "answer": "A prime number is a prime number that can be expressed as a prime number. It is a prime number that can be expressed as a prime number that can be expressed as a prime number that can be expressed as a prime number that can be expressed as a prime number that can be expressed as a prime number that can be expressed as a prime number that can be expressed as a prime number that can be expressed as a prime number that can be expressed as a prime number that can be expressed as a prime number that can be expressed as a prime number that can be expressed as a prime number that can be expressed as a prime number that can be",
+      "stopped_on_eot": false
+    },
+    {
+      "prompt": "What is 2 + 3? Answer with just the number.",
+      "answer": "2",
+      "stopped_on_eot": true
+    }
+  ]
+}
